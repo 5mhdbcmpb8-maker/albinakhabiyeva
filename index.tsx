@@ -4,24 +4,24 @@ import { motion, useSpring, useMotionValue, useMotionTemplate, AnimatePresence }
 import { Instagram, MapPin, X, ArrowRight, Upload, FileText, Image as ImageIcon, Trash2 } from 'lucide-react';
 
 // --- CONFIGURATION ---
-const MAIN_IMAGE_URL = "https://i.ibb.co/PZMPwgnC/DSC08612-new-ps-2.jpg"; 
+// Ana arka plan resmi (hero.jpg demiştin)
+const MAIN_IMAGE_URL = "/hero.jpg"; 
 
 const PORTFOLIO_IMAGES = [
-  "https://i.ibb.co/CxzGX9L/i-Screen-Shoter-Safari-251231004301.jpg",
-  "https://i.ibb.co/rRbrV2sV/i-Screen-Shoter-Safari-251231004230.jpg",
-  "https://i.ibb.co/WvpMgcfp/i-Screen-Shoter-Safari-251231004212.jpg",
-  "https://i.ibb.co/wh7GxJXg/i-Screen-Shoter-20251231004029161.jpg",
-  "https://i.ibb.co/cSMvhVyY/i-Screen-Shoter-Safari-251231003950.jpg",
-  "https://i.ibb.co/YFXhHjRg/DSC00042-newer-1.jpg",
-  "https://i.ibb.co/KjSvVqhb/IMG-7542.jpg",
-  "https://i.ibb.co/8n5LxKV5/IMG-7543.jpg",
-  "https://i.ibb.co/3YPpgpKp/IMG-7544.jpg",
-  "https://i.ibb.co/dsJ80mNw/DSC08582-new-ps.jpg",
-  "https://i.ibb.co/XrvhhKCq/IMG-7547.jpg",
-  "https://i.ibb.co/spbBbBKr/IMG-7546.jpg",
-  "https://i.ibb.co/zTvxDwtz/IMG-7545.jpg",
-  "https://i.ibb.co/DHt9yhP0/IMG-7548.jpg",
-  "https://i.ibb.co/Z1FjY7qx/IMG-7549.jpg"
+  "/DSC00042_newer_1.jpg",
+  "/IMG_7542.jpg",
+  "/IMG_7543.jpg",
+  "/IMG_7544.jpg",
+  "/IMG_7545.jpg",
+  "/IMG_7546.jpg",
+  "/IMG_7547.jpg",
+  "/IMG_7548.jpg",
+  "/IMG_7549.jpg",
+  "/iScreen Shot 2025-12-31 at 00.40.29.jpg", // Dosya ismindeki boşluklara ve karakterlere dikkat!
+  "/iScreen Shot 2025-12-31 at 00.39.50.jpg",
+  "/iScreen Shot 2025-12-31 at 00.42.12.jpg",
+  "/iScreen Shot 2025-12-31 at 00.42.30.jpg",
+  "/iScreen Shot 2025-12-31 at 00.43.01.jpg"
 ];
 
 // --- Components ---
