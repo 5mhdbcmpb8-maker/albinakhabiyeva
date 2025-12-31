@@ -221,6 +221,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
   const [password, setPassword] = useState('');
   const [activeTab, setActiveTab] = useState<'home' | 'bookings' | 'portfolio' | 'form'>('bookings');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
   
   // Form Builder State
   const [newFieldLabel, setNewFieldLabel] = useState('');
@@ -245,29 +246,31 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
     }
   };
 
-  const deleteBooking = (id: string) => {
-    if(!window.confirm("Delete this booking request? This cannot be undone.")) return;
-    
-    // Filter by ID to ensure correct item deletion
-    const updated = bookings.filter((b: any) => b.id !== id);
-    setBookings(updated);
-    
-    try {
-        localStorage.setItem('tattoo_bookings', JSON.stringify(updated));
-    } catch(e) { 
-        console.error("LS Error", e);
-        alert("Could not update storage, but item removed from view.");
+  // Improved Delete Logic: 2-step confirmation on button
+  const handleDeleteClick = (index: number) => {
+    if (deleteConfirmIndex === index) {
+        // Already confirmed, proceed to delete
+        const updated = [...bookings];
+        updated.splice(index, 1);
+        setBookings(updated);
+        try {
+            localStorage.setItem('tattoo_bookings', JSON.stringify(updated));
+        } catch(e) { console.error("LS Error", e); }
+        setDeleteConfirmIndex(null);
+    } else {
+        // First click, show confirm
+        setDeleteConfirmIndex(index);
     }
   };
 
   // --- Image Upload Handlers ---
 
   const handlePortfolioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
+    if (e.target.files && e.target.files.length > 0) {
       try {
-        const file = e.target.files[0];
-        const compressedBase64 = await compressPortfolioImage(file);
-        const updated = [compressedBase64, ...portfolioImages];
+        const selectedFiles = Array.from(e.target.files).slice(0, 20) as File[]; // Max 20 batch upload
+        const processedImages = await Promise.all(selectedFiles.map(file => compressPortfolioImage(file)));
+        const updated = [...processedImages, ...portfolioImages];
         setPortfolioImages(updated);
         localStorage.setItem('tattoo_portfolio', JSON.stringify(updated));
       } catch (err) {
@@ -476,24 +479,34 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
         {activeTab === 'bookings' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <h3 style={{color: THEME.primary, textTransform: 'uppercase', fontSize: '14px', letterSpacing: '0.1em'}}>
-              {bookings.length} Pending Request(s)
+              {bookings.length} Client Requests
             </h3>
-            {bookings.length === 0 && <p style={{color: '#444'}}>No new bookings.</p>}
-            {bookings.map((booking: any) => (
-              <div key={booking.id || Math.random()} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '20px', borderRadius: '4px', position: 'relative' }}>
+            {bookings.length === 0 && <p style={{color: '#444'}}>No booking requests found.</p>}
+            {bookings.map((booking: any, index: number) => (
+              <div key={booking.id || index} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '20px', borderRadius: '4px', position: 'relative' }}>
                 <button 
-                    onClick={(e) => { e.stopPropagation(); deleteBooking(booking.id); }} 
+                    onClick={(e) => { e.stopPropagation(); handleDeleteClick(index); }} 
                     style={{ 
                         position: 'absolute', top: 15, right: 15, 
-                        background: 'rgba(0,0,0,0.3)', borderRadius: '50%', 
-                        width: '32px', height: '32px', 
+                        background: deleteConfirmIndex === index ? 'red' : 'rgba(200,0,0,0.6)', 
+                        borderRadius: deleteConfirmIndex === index ? '4px' : '50%', 
+                        width: deleteConfirmIndex === index ? 'auto' : '32px', 
+                        height: '32px', 
+                        padding: deleteConfirmIndex === index ? '0 10px' : '0',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        border: '1px solid rgba(255,255,255,0.1)', color: '#fff', 
-                        cursor: 'pointer', zIndex: 50
+                        border: '1px solid rgba(255,255,255,0.2)', color: '#fff', 
+                        cursor: 'pointer', zIndex: 50,
+                        transition: 'all 0.2s'
+                    }}
+                    onMouseLeave={(e) => {
+                         if (deleteConfirmIndex !== index) e.currentTarget.style.background = 'rgba(200,0,0,0.6)';
+                    }}
+                    onMouseEnter={(e) => {
+                         if (deleteConfirmIndex !== index) e.currentTarget.style.background = 'red';
                     }}
                     title="Delete Request"
                 >
-                    <Trash2 size={16} />
+                    {deleteConfirmIndex === index ? <span style={{fontSize: '10px', fontWeight: 'bold'}}>CONFIRM</span> : <Trash2 size={16} />}
                 </button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', marginBottom: '20px' }}>
                   <div><span style={{color: '#666', fontSize: '10px', textTransform: 'uppercase'}}>Client</span><br/>{booking.name}<br/><span style={{fontSize:'12px', color: '#888', wordBreak: 'break-all'}}>{booking.email}</span></div>
@@ -565,10 +578,10 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
                     onClick={() => fileInputRef.current?.click()}
                     style={{padding: '15px 30px', background: '#fff', color: '#000', border: 'none', cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px'}}
                 >
-                    <Upload size={18}/> UPLOAD IMAGE
+                    <Upload size={18}/> UPLOAD IMAGES
                 </button>
-                <input type="file" ref={fileInputRef} onChange={handlePortfolioUpload} style={{display:'none'}} accept="image/png, image/jpeg" />
-                <span style={{color: '#666', fontSize: '12px'}}>Drag to reorder.</span>
+                <input type="file" multiple ref={fileInputRef} onChange={handlePortfolioUpload} style={{display:'none'}} accept="image/png, image/jpeg" />
+                <span style={{color: '#666', fontSize: '12px'}}>Max 20 files at once. Drag to reorder.</span>
             </div>
             
             <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '15px'}}>
@@ -745,34 +758,61 @@ const PortfolioView = ({ onClose, images }: { onClose: () => void, images: strin
         )}
       </AnimatePresence>
 
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '100px 20px' }}>
+      <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '120px 40px' }}>
          <h2 style={{
              color: THEME.primary, 
              textAlign: 'center', 
-             fontFamily: 'Helvetica', 
-             fontWeight: 300, 
+             fontFamily: '"Playfair Display", serif', 
+             fontWeight: 400, 
              letterSpacing: '0.2em', 
              textTransform: 'uppercase', 
-             marginBottom: '60px',
-             fontSize: '24px'
+             marginBottom: '80px',
+             fontSize: 'clamp(24px, 4vw, 40px)',
+             opacity: 0.9
          }}>
              Selected Works
          </h2>
 
-         <div style={{ columns: '1 300px', columnGap: '20px' }}>
+         <div style={{ 
+            display: 'grid', 
+            gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', 
+            gap: '40px' 
+         }}>
             {images.map((src, i) => (
                 <div 
                   key={i} 
                   onClick={() => setSelectedImage(src)}
-                  style={{ breakInside: 'avoid', marginBottom: '20px', cursor: 'pointer', opacity: 0.8, transition: 'opacity 0.3s' }}
-                  onMouseEnter={e => e.currentTarget.style.opacity = '1'}
-                  onMouseLeave={e => e.currentTarget.style.opacity = '0.8'}
+                  style={{ 
+                      aspectRatio: '3/4', 
+                      cursor: 'pointer', 
+                      overflow: 'hidden',
+                      position: 'relative',
+                      borderRadius: '2px'
+                  }}
                 >
-                    <img src={src} style={{ width: '100%', borderRadius: '2px', display: 'block' }} loading="lazy" />
+                    <img 
+                        src={src} 
+                        style={{
+                            width: '100%', height: '100%', 
+                            objectFit: 'cover', 
+                            filter: 'grayscale(100%) brightness(0.7)',
+                            transition: 'all 0.5s ease',
+                            transform: 'scale(1.0)',
+                            display: 'block'
+                        }}
+                        onMouseEnter={e => {
+                            e.currentTarget.style.filter = 'grayscale(0%) brightness(1)';
+                            e.currentTarget.style.transform = 'scale(1.05)';
+                        }}
+                        onMouseLeave={e => {
+                            e.currentTarget.style.filter = 'grayscale(100%) brightness(0.7)';
+                            e.currentTarget.style.transform = 'scale(1.0)';
+                        }}
+                    />
                 </div>
             ))}
          </div>
-         {images.length === 0 && <p style={{textAlign: 'center', color: '#666'}}>No images in portfolio yet.</p>}
+         {images.length === 0 && <p style={{textAlign: 'center', color: '#666', fontFamily: 'Helvetica', fontWeight: 300, letterSpacing: '0.1em'}}>Portfolio is currently empty.</p>}
       </div>
     </motion.div>
   )
@@ -823,9 +863,16 @@ const BookingView = ({ onClose, onAdminRequest, formFields, onBookingSubmit }: a
     setFormData((prev: any) => ({ ...prev, [id]: value }));
   };
 
+  // Fixed: Enforce max 20 files
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-        setFiles(Array.from(e.target.files));
+        const selected = Array.from(e.target.files);
+        if (selected.length > 20) {
+            alert("You can upload a maximum of 20 photos. Only the first 20 will be used.");
+            setFiles(selected.slice(0, 20));
+        } else {
+            setFiles(selected);
+        }
     }
   };
 
@@ -880,7 +927,7 @@ const BookingView = ({ onClose, onAdminRequest, formFields, onBookingSubmit }: a
         >
             <CloseButton onClick={onClose} />
             <CheckCircle size={60} color={THEME.primary} style={{marginBottom: '20px'}} />
-            <h2 style={{fontFamily: 'Helvetica', fontWeight: 300, letterSpacing: '0.1em', textTransform: 'uppercase'}}>Request Sent</h2>
+            <h2 style={{fontFamily: '"Playfair Display", serif', fontWeight: 300, letterSpacing: '0.1em', textTransform: 'uppercase'}}>Request Sent</h2>
             <p style={{color: '#888', marginTop: '10px'}}>I will review your concept and get back to you shortly.</p>
         </motion.div>
       )
@@ -997,7 +1044,7 @@ const BookingView = ({ onClose, onAdminRequest, formFields, onBookingSubmit }: a
                         <input id="file-upload" type="file" multiple accept="image/*" onChange={handleFileChange} style={{display: 'none'}} />
                         <Upload size={24} color="#666" style={{marginBottom: '10px'}} />
                         <p style={{margin: 0, color: '#888', fontSize: '13px'}}>
-                            {files.length > 0 ? `${files.length} file(s) selected` : "Click to upload images"}
+                            {files.length > 0 ? `${files.length} file(s) selected (Max 20)` : "Click to upload images (Max 20)"}
                         </p>
                     </div>
                 </div>
@@ -1184,13 +1231,13 @@ const App = () => {
           >
             <FlashlightText active={true} style={{ 
               fontSize: 'clamp(40px, 6vw, 80px)', fontWeight: 600, lineHeight: 0.9, 
-              fontFamily: 'Helvetica, Arial, sans-serif', letterSpacing: '-0.03em', textTransform: 'uppercase'
+              fontFamily: '"Playfair Display", serif', letterSpacing: '-0.03em', textTransform: 'uppercase'
             }}>
-              @tattoo
+              tattoo
             </FlashlightText>
             <FlashlightText active={true} style={{ 
-              fontSize: 'clamp(40px, 6vw, 80px)', fontWeight: 300, lineHeight: 0.9, 
-              fontFamily: 'Helvetica, Arial, sans-serif', letterSpacing: '-0.02em', textTransform: 'uppercase',
+              fontSize: 'clamp(40px, 6vw, 80px)', fontWeight: 400, lineHeight: 0.9, 
+              fontFamily: '"Playfair Display", serif', letterSpacing: '-0.02em', textTransform: 'uppercase', fontStyle: 'italic'
             }}>
               .alb
             </FlashlightText>
