@@ -7,7 +7,6 @@ import { Instagram, X, ArrowRight, Upload, FileText, Image as ImageIcon, Trash2,
 const DEFAULT_MAIN_IMAGE_URL = "https://i.ibb.co/PZMPwgnC/DSC08612-new-ps-2.jpg"; 
 
 // NOTIFICATION & CLOUD CONFIGURATION (ntfy.sh)
-// This topic acts as both the notification channel AND the "database"
 const NTFY_TOPIC = "tattoo_alb_requests_v1";
 
 // Theme Colors - Silver/Elite
@@ -45,9 +44,75 @@ const DEFAULT_FORM_FIELDS = [
   { id: 'description', label: 'Concept Description', type: 'textarea', placeholder: 'Describe your idea, placement, and any specific elements you want included.' }
 ];
 
+// --- STORAGE LAYER (IndexedDB) ---
+// Fixing local storage quota limits by using IndexedDB
+const DB_NAME = 'tattoo_alb_db_v1';
+const STORES = {
+  bookings: 'bookings',
+  keyval: 'keyval' // For settings, portfolio array, etc.
+};
+
+const idbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+  if (typeof window === 'undefined') return;
+  const request = indexedDB.open(DB_NAME, 2);
+  request.onupgradeneeded = (event: any) => {
+    const db = event.target.result;
+    if (!db.objectStoreNames.contains(STORES.bookings)) {
+      db.createObjectStore(STORES.bookings, { keyPath: 'id' });
+    }
+    if (!db.objectStoreNames.contains(STORES.keyval)) {
+      db.createObjectStore(STORES.keyval, { keyPath: 'id' });
+    }
+  };
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error);
+});
+
+const dbActions = {
+  getAll: async (storeName: string) => {
+    const db = await idbPromise;
+    return new Promise<any[]>((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const store = tx.objectStore(storeName);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  },
+  put: async (storeName: string, value: any) => {
+    const db = await idbPromise;
+    return new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      const store = tx.objectStore(storeName);
+      const req = store.put(value);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  },
+  delete: async (storeName: string, id: string) => {
+    const db = await idbPromise;
+    return new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      const store = tx.objectStore(storeName);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  },
+  get: async (storeName: string, id: string) => {
+    const db = await idbPromise;
+    return new Promise<any>((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const store = tx.objectStore(storeName);
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+};
+
 // --- Helper Functions ---
 
-// Aggressive Compression
 const compressAndConvertToBase64 = (file: File): Promise<{name: string, data: string}> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -57,7 +122,8 @@ const compressAndConvertToBase64 = (file: File): Promise<{name: string, data: st
       img.src = event.target?.result as string;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 300; 
+        // Mobile-safe max width, balance quality vs size
+        const MAX_WIDTH = 800; 
         const scaleSize = MAX_WIDTH / img.width;
         const finalScale = scaleSize < 1 ? scaleSize : 1;
         canvas.width = img.width * finalScale;
@@ -65,9 +131,10 @@ const compressAndConvertToBase64 = (file: File): Promise<{name: string, data: st
         const ctx = canvas.getContext('2d');
         if (ctx) {
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            // 0.6 quality is a sweet spot to save space but keep detail
             resolve({
                 name: file.name,
-                data: canvas.toDataURL('image/jpeg', 0.4) 
+                data: canvas.toDataURL('image/jpeg', 0.6) 
             });
         } else {
             reject(new Error("Canvas context failed"));
@@ -170,38 +237,17 @@ const AdminTabButton = ({ active, onClick, icon: Icon, label }: any) => (
   </button>
 );
 
-const compressPortfolioImage = (file: File): Promise<string> => {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1000; 
-        const scaleSize = MAX_WIDTH / img.width;
-        const finalScale = scaleSize < 1 ? scaleSize : 1;
-        canvas.width = img.width * finalScale;
-        canvas.height = img.height * finalScale;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.7)); 
-      };
-    };
-  });
-};
-
-const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfolioImages, formFields, setFormFields, homeImage, setHomeImage }: any) => {
+const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfolioImages, formFields, setFormFields, homeImage, setHomeImage, deletedIds, setDeletedIds }: any) => {
   const [authorized, setAuthorized] = useState(false);
   const [password, setPassword] = useState('');
   const [activeTab, setActiveTab] = useState<'bookings' | 'analytics' | 'portfolio' | 'form' | 'settings'>('bookings');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-  const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   
   // Cloud/Analytics State
   const [analyticsData, setAnalyticsData] = useState<any>({ totalVisits: 0, uniqueVisitors: 0, history: [] });
   const [isSyncing, setIsSyncing] = useState(false);
+  const hasSyncedRef = useRef(false);
   
   // Form Builder State
   const [newFieldLabel, setNewFieldLabel] = useState('');
@@ -216,9 +262,10 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
 
-  // Sync Data on Load (Cloud Memory)
+  // Sync Data on Auth
   useEffect(() => {
-    if (authorized) {
+    if (authorized && !hasSyncedRef.current) {
+       hasSyncedRef.current = true;
        syncFromCloud();
     }
   }, [authorized]);
@@ -226,46 +273,53 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
   const syncFromCloud = async () => {
     setIsSyncing(true);
     try {
-        // Fetch all history from ntfy topic (acts as database)
         const response = await fetch(`https://ntfy.sh/${NTFY_TOPIC}/json?since=all`);
         const text = await response.text();
         
-        // ntfy returns newline delimited JSON
         const messages = text.trim().split('\n').map(line => {
             try { return JSON.parse(line); } catch(e) { return null; }
         }).filter(m => m !== null);
 
-        // Process Analytics (Visits)
+        // Process Analytics
         const visits = messages.filter((m:any) => {
-            try { 
-                const body = JSON.parse(m.message); 
-                return body.type === 'visit'; 
-            } catch(e) { return false; }
+            try { const body = JSON.parse(m.message); return body.type === 'visit'; } catch(e) { return false; }
         });
 
-        // Process Bookings (Cloud Sync)
+        // Extract Tombstones (Deletes)
+        const tombstones = messages.filter((m:any) => {
+            try { const body = JSON.parse(m.message); return body.type === 'booking_delete'; } catch(e) { return false; }
+        }).map((m:any) => JSON.parse(m.message).id);
+
+        const allDeletedIds = Array.from(new Set([...deletedIds, ...tombstones]));
+        setDeletedIds(allDeletedIds);
+        dbActions.put(STORES.keyval, { id: 'deleted_ids', value: allDeletedIds });
+
+        // Process Bookings
         const cloudBookings = messages.filter((m:any) => {
-             try {
-                 const body = JSON.parse(m.message);
-                 return body.type === 'booking';
-             } catch(e) { return false; }
-        }).map((m:any) => {
-             const body = JSON.parse(m.message);
-             return body.data;
-        });
+             try { const body = JSON.parse(m.message); return body.type === 'booking'; } catch(e) { return false; }
+        }).map((m:any) => JSON.parse(m.message).data);
 
-        // Merge cloud bookings with local bookings (prevent duplicates by ID)
+        // Merge Logic
         const mergedBookings = [...bookings];
+        let changesMade = false;
+
         cloudBookings.forEach((cloudB: any) => {
-            if (!mergedBookings.some(localB => localB.id === cloudB.id)) {
+            if (!mergedBookings.some(localB => localB.id === cloudB.id) && !allDeletedIds.includes(cloudB.id)) {
                 mergedBookings.push(cloudB);
+                changesMade = true;
+                // Save new entries to IDB
+                dbActions.put(STORES.bookings, cloudB);
             }
         });
         
-        // Sort by date new to old
-        mergedBookings.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        // Remove items that are in deleted list but somehow still in merged
+        const cleanBookings = mergedBookings.filter(b => !allDeletedIds.includes(b.id));
+        cleanBookings.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-        setBookings(mergedBookings);
+        if (cleanBookings.length !== bookings.length || changesMade) {
+            setBookings(cleanBookings);
+        }
+        
         setAnalyticsData({
             totalVisits: visits.length,
             history: visits,
@@ -284,15 +338,32 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
     else alert('Wrong password');
   };
 
-  const handleDeleteClick = (index: number) => {
-    if (deleteConfirmIndex === index) {
-        const updated = [...bookings];
-        updated.splice(index, 1);
+  const handleDeleteClick = async (id: string) => {
+    if (deleteConfirmId === id) {
+        // 1. Remove from local state
+        const updated = bookings.filter((b: any) => b.id !== id);
         setBookings(updated);
-        try { localStorage.setItem('tattoo_bookings', JSON.stringify(updated)); } catch(e) {}
-        setDeleteConfirmIndex(null);
+        
+        // 2. Remove from IndexedDB
+        await dbActions.delete(STORES.bookings, id);
+        
+        // 3. Add to Tombstones locally
+        const newDeletedIds = [...deletedIds, id];
+        setDeletedIds(newDeletedIds);
+        await dbActions.put(STORES.keyval, { id: 'deleted_ids', value: newDeletedIds });
+
+        // 4. Broadcast Tombstone to Cloud
+        try {
+            await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
+                method: 'POST',
+                body: JSON.stringify({ type: 'booking_delete', id, ts: Date.now() }),
+                headers: { 'Tags': 'delete' }
+            });
+        } catch(e) { console.warn("Failed to sync delete to cloud"); }
+
+        setDeleteConfirmId(null);
     } else {
-        setDeleteConfirmIndex(index);
+        setDeleteConfirmId(id);
     }
   };
 
@@ -300,12 +371,13 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
     if (e.target.files && e.target.files.length > 0) {
       try {
         const selectedFiles = Array.from(e.target.files).slice(0, 20) as File[];
-        const processedImages = await Promise.all(selectedFiles.map(file => compressPortfolioImage(file)));
-        const updated = [...processedImages, ...portfolioImages];
-        try {
-            localStorage.setItem('tattoo_portfolio', JSON.stringify(updated));
-            setPortfolioImages(updated);
-        } catch (e) { alert("Storage full! Delete some images."); }
+        const processedImages = await Promise.all(selectedFiles.map(file => compressAndConvertToBase64(file))); // Reusing main compressor
+        // Portfolio images array state is simple strings (base64)
+        const newImages = processedImages.map(img => img.data);
+        const updated = [...newImages, ...portfolioImages];
+        
+        setPortfolioImages(updated);
+        await dbActions.put(STORES.keyval, { id: 'portfolio', value: updated });
       } catch (err) { alert("Upload error."); }
     }
   };
@@ -314,11 +386,9 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
     if (e.target.files && e.target.files[0]) {
       try {
         const file = e.target.files[0];
-        const compressedBase64 = await compressPortfolioImage(file);
-        try {
-            localStorage.setItem('tattoo_home_image', compressedBase64);
-            setHomeImage(compressedBase64);
-        } catch (e) { alert("Storage full!"); }
+        const compressed = await compressAndConvertToBase64(file);
+        setHomeImage(compressed.data);
+        await dbActions.put(STORES.keyval, { id: 'home_image', value: compressed.data });
       } catch (err) { alert("Error uploading."); }
     }
   };
@@ -341,7 +411,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
         dragItem.current = null;
         dragOverItem.current = null;
         setPortfolioImages(copyListItems);
-        localStorage.setItem('tattoo_portfolio', JSON.stringify(copyListItems));
+        dbActions.put(STORES.keyval, { id: 'portfolio', value: copyListItems });
     }
   };
 
@@ -354,7 +424,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
         dragItem.current = null;
         dragOverItem.current = null;
         setFormFields(copyListItems);
-        localStorage.setItem('tattoo_form_fields', JSON.stringify(copyListItems));
+        dbActions.put(STORES.keyval, { id: 'form_fields', value: copyListItems });
     }
   };
 
@@ -363,7 +433,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
     const updated = [...portfolioImages];
     updated.splice(index, 1);
     setPortfolioImages(updated);
-    localStorage.setItem('tattoo_portfolio', JSON.stringify(updated));
+    dbActions.put(STORES.keyval, { id: 'portfolio', value: updated });
   };
 
   // Form Builder Handlers
@@ -372,7 +442,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
     const updated = [...formFields];
     updated.splice(index, 1);
     setFormFields(updated);
-    localStorage.setItem('tattoo_form_fields', JSON.stringify(updated));
+    dbActions.put(STORES.keyval, { id: 'form_fields', value: updated });
   };
 
   const saveField = (e: React.FormEvent) => {
@@ -390,7 +460,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
         updated = [...formFields, newField];
     }
     setFormFields(updated);
-    localStorage.setItem('tattoo_form_fields', JSON.stringify(updated));
+    dbActions.put(STORES.keyval, { id: 'form_fields', value: updated });
     setNewFieldLabel(''); setNewFieldOptions('');
   };
 
@@ -420,11 +490,11 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
   return (
     <motion.div 
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      style={{ position: 'fixed', inset: 0, zIndex: 500, backgroundColor: '#050505', color: '#fff', overflowY: 'auto' }}
+      className="scroll-container"
+      style={{ position: 'fixed', inset: 0, zIndex: 500, backgroundColor: '#050505', color: '#fff' }}
     >
       <CloseButton onClick={onClose} />
       
-      {/* PREVIEW MODAL */}
       <AnimatePresence>
         {previewImage && (
             <motion.div
@@ -466,19 +536,19 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
             </div>
 
             {bookings.length === 0 && <p style={{color: '#444'}}>No requests found.</p>}
-            {bookings.map((booking: any, index: number) => (
-              <div key={booking.id || index} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '20px', borderRadius: '4px', position: 'relative' }}>
+            {bookings.map((booking: any) => (
+              <div key={booking.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '20px', borderRadius: '4px', position: 'relative' }}>
                 <button 
-                    onClick={(e) => { e.stopPropagation(); handleDeleteClick(index); }} 
+                    onClick={(e) => { e.stopPropagation(); handleDeleteClick(booking.id); }} 
                     style={{ 
                         position: 'absolute', top: 15, right: 15, 
-                        background: deleteConfirmIndex === index ? 'red' : 'rgba(200,0,0,0.6)', 
-                        borderRadius: deleteConfirmIndex === index ? '4px' : '50%', 
-                        width: deleteConfirmIndex === index ? 'auto' : '32px', height: '32px', padding: deleteConfirmIndex === index ? '0 10px' : '0',
+                        background: deleteConfirmId === booking.id ? 'red' : 'rgba(200,0,0,0.6)', 
+                        borderRadius: deleteConfirmId === booking.id ? '4px' : '50%', 
+                        width: deleteConfirmId === booking.id ? 'auto' : '32px', height: '32px', padding: deleteConfirmId === booking.id ? '0 10px' : '0',
                         display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', cursor: 'pointer', zIndex: 50, transition: 'all 0.2s'
                     }}
                 >
-                    {deleteConfirmIndex === index ? <span style={{fontSize: '10px', fontWeight: 'bold'}}>CONFIRM</span> : <Trash2 size={16} />}
+                    {deleteConfirmId === booking.id ? <span style={{fontSize: '10px', fontWeight: 'bold'}}>CONFIRM</span> : <Trash2 size={16} />}
                 </button>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', marginBottom: '20px' }}>
                   <div>
@@ -509,7 +579,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
                  </div>
                  ) : (
                     <div style={{marginTop: '15px', fontSize: '11px', color: '#555', fontStyle: 'italic'}}>
-                        (If images were attached on another device, check your notification app for full quality photos)
+                        (No images attached or synced to this device)
                     </div>
                  )}
               </div>
@@ -522,7 +592,7 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
             <div>
                  <h3 style={{color: THEME.primary, textTransform: 'uppercase', fontSize: '14px', letterSpacing: '0.1em', marginBottom: '30px'}}>Traffic Analytics</h3>
                  
-                 <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px', marginBottom: '40px'}}>
+                 <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '20px', marginBottom: '40px'}}>
                      <div style={{background: 'rgba(255,255,255,0.05)', padding: '20px', borderRadius: '4px', textAlign: 'center'}}>
                          <Activity size={30} color={THEME.primary} style={{marginBottom: '10px'}} />
                          <div style={{fontSize: '32px', fontWeight: 'bold'}}>{analyticsData.totalVisits}</div>
@@ -562,9 +632,10 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
                     <Upload size={18}/> UPLOAD IMAGES
                 </button>
                 <input type="file" multiple ref={fileInputRef} onChange={handlePortfolioUpload} style={{display:'none'}} accept="image/png, image/jpeg" />
-                <span style={{color: '#666', fontSize: '12px'}}>Drag to reorder</span>
+                <span style={{color: '#666', fontSize: '12px'}}>Images save to this device only.</span>
             </div>
-            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '10px'}}>
+            {/* Optimized grid for mobile */}
+            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: '10px'}}>
               {portfolioImages.map((src: string, i: number) => (
                 <div 
                     key={i} 
@@ -596,6 +667,12 @@ const AdminView = ({ onClose, bookings, setBookings, portfolioImages, setPortfol
                         <Upload size={18}/> CHANGE BACKGROUND
                     </button>
                     <input type="file" ref={homeImageInputRef} onChange={handleHomeImageUpload} style={{display:'none'}} accept="image/png, image/jpeg" />
+                </div>
+                <div style={{marginTop: '40px', borderTop: '1px solid #333', paddingTop: '20px'}}>
+                    <p style={{fontSize: '11px', color: '#666', lineHeight: '1.5'}}>
+                        Note: Large images are stored on this device. Cloud sync only transfers text data and deletions. 
+                        To view portfolio images on a different device, you must upload them on that device.
+                    </p>
                 </div>
             </div>
         )}
@@ -651,7 +728,8 @@ const PortfolioView = ({ onClose, images }: { onClose: () => void, images: strin
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      style={{ position: 'fixed', inset: 0, zIndex: 400, backgroundColor: '#050505', overflowY: 'auto' }}
+      className="scroll-container"
+      style={{ position: 'fixed', inset: 0, zIndex: 400, backgroundColor: '#050505' }}
     >
       <CloseButton onClick={onClose} />
       
@@ -742,33 +820,30 @@ const BookingView = ({ onClose, onAdminRequest, formFields, onBookingSubmit }: a
             email: (document.getElementById('email') as HTMLInputElement).value,
             description: descriptionValue,
             customFields: formData,
-            images: processedImages // Local/Full images
+            images: processedImages 
         };
         
-        // Cloud Data (Images removed to save bandwidth/limit on free tier notifications)
-        const cloudData = {
-            ...bookingData,
-            images: [] // Don't send heavy images to cloud text channel
-        };
+        // Cloud Data (Stripping images to prevent ntfy payload errors)
+        const cloudData = { ...bookingData, images: [] };
 
-        // 1. Send to Cloud (ntfy) so Admin Panel sees it immediately
+        // 1. Send to Cloud (ntfy)
         await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
             method: 'POST',
             body: JSON.stringify({ type: 'booking', data: cloudData }),
             headers: { 'Title': `New Booking: ${bookingData.name}`, 'Tags': 'tattoo,new_booking' }
         });
 
-        // 2. Fallback Notification (Optional, ensures mobile notification appears)
+        // 2. Fallback Notification
         await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
             method: 'POST',
-            body: `New Request from ${bookingData.name}. Check Admin Panel for details.`,
+            body: `New Request from ${bookingData.name}. Images saved to client device.`,
             headers: { 'Priority': 'urgent' }
         });
 
         onBookingSubmit(bookingData);
         setSubmitted(true);
     } catch (error) {
-        alert("Network error. Please try again.");
+        alert("Network error. Please check your connection.");
     } finally {
         setIsSubmitting(false);
     }
@@ -786,7 +861,7 @@ const BookingView = ({ onClose, onAdminRequest, formFields, onBookingSubmit }: a
   }
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: 'fixed', inset: 0, zIndex: 400, backgroundColor: '#050505', overflowY: 'auto' }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="scroll-container" style={{ position: 'fixed', inset: 0, zIndex: 400, backgroundColor: '#050505' }}>
         <CloseButton onClick={onClose} />
         <div onClick={handleSecretClick} style={{position: 'absolute', top: 0, left: 0, width: '80px', height: '80px', zIndex: 500}} />
         <div style={{ maxWidth: '600px', margin: '0 auto', padding: '100px 20px' }}>
@@ -847,6 +922,7 @@ const App = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   
   const [bookings, setBookings] = useState<any[]>([]);
+  const [deletedIds, setDeletedIds] = useState<string[]>([]);
   const [portfolioImages, setPortfolioImages] = useState<string[]>(DEFAULT_PORTFOLIO);
   const [formFields, setFormFields] = useState<any[]>(DEFAULT_FORM_FIELDS);
   const [homeImage, setHomeImage] = useState<string>(DEFAULT_MAIN_IMAGE_URL);
@@ -867,11 +943,40 @@ const App = () => {
     }
   }, []);
 
+  // LOAD DATA FROM INDEXEDDB
   useEffect(() => {
-    try { const savedBookings = localStorage.getItem('tattoo_bookings'); if (savedBookings) setBookings(JSON.parse(savedBookings)); } catch(e) {}
-    try { const savedPortfolio = localStorage.getItem('tattoo_portfolio'); if (savedPortfolio) setPortfolioImages(JSON.parse(savedPortfolio)); } catch(e) {}
-    try { const savedFields = localStorage.getItem('tattoo_form_fields'); if (savedFields) setFormFields(JSON.parse(savedFields)); } catch(e) {}
-    try { const savedHome = localStorage.getItem('tattoo_home_image'); if (savedHome) setHomeImage(savedHome); } catch(e) {}
+    const loadData = async () => {
+        try {
+            const savedBookings = await dbActions.getAll(STORES.bookings);
+            if (savedBookings.length > 0) {
+                savedBookings.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                setBookings(savedBookings);
+            }
+            
+            // Migrate from LocalStorage if needed (One time)
+            const lsBookings = localStorage.getItem('tattoo_bookings');
+            if (lsBookings && savedBookings.length === 0) {
+                const parsed = JSON.parse(lsBookings);
+                setBookings(parsed);
+                parsed.forEach((b:any) => dbActions.put(STORES.bookings, b));
+            }
+        } catch(e) { console.warn("DB Load Error", e); }
+
+        try {
+            const p = await dbActions.get(STORES.keyval, 'portfolio');
+            if (p) setPortfolioImages(p.value);
+            
+            const h = await dbActions.get(STORES.keyval, 'home_image');
+            if (h) setHomeImage(h.value);
+
+            const d = await dbActions.get(STORES.keyval, 'deleted_ids');
+            if (d) setDeletedIds(d.value);
+
+            const f = await dbActions.get(STORES.keyval, 'form_fields');
+            if (f) setFormFields(f.value);
+        } catch(e) {}
+    };
+    loadData();
   }, []);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
@@ -949,11 +1054,11 @@ const App = () => {
                 onAdminRequest={() => setView('admin')} 
                 formFields={formFields}
                 onBookingSubmit={(newBooking: any) => {
-                    try {
-                        const updated = [newBooking, ...bookings];
-                        setBookings(updated);
-                        localStorage.setItem('tattoo_bookings', JSON.stringify(updated));
-                    } catch(e) {}
+                    // Update state immediately
+                    const updated = [newBooking, ...bookings];
+                    setBookings(updated);
+                    // Save to IDB
+                    dbActions.put(STORES.bookings, newBooking);
                 }}
             />
         )}
@@ -961,6 +1066,7 @@ const App = () => {
             <AdminView 
                 onClose={() => setView('home')}
                 bookings={bookings} setBookings={setBookings}
+                deletedIds={deletedIds} setDeletedIds={setDeletedIds}
                 portfolioImages={portfolioImages} setPortfolioImages={setPortfolioImages}
                 formFields={formFields} setFormFields={setFormFields}
                 homeImage={homeImage} setHomeImage={setHomeImage}
